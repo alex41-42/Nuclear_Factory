@@ -15,12 +15,13 @@ const GRID_WIDTH = GAME_WIDTH / CELL_SIZE;
 const GRID_HEIGHT = GAME_HEIGHT / CELL_SIZE;
 
 const MATERIALS = {
-    "air": {type: "air", state: "gas", density: 1.20, temperature: 20, heatCapacity: 1000, thermalConductivity: 0.026 ,pressure: 1},
-    "sand": {type:"sand", state:"powder", density: 1500, temperature:20, heatCapacity: 830, thermalConductivity: 0.3 ,pressure:1},
-    "water": {type:"water", state:"liquid", density: 1000, temperature:20, heatCapacity: 4180, thermalConductivity: 0.6 ,pressure:1},
-    "uranium": {type:"uranium", state:"powder", density: 19100, temperature:400, heatCapacity: 116, thermalConductivity: 0.026 ,pressure:1},
-    "wall": {type: "wall", state: "solid", density: Infinity, temperature: 20, heatCapacity: 0, thermalConductivity: 27 ,pressure: 1},
+    "air": {type: "air", state: "gas", density: 1.20, temperature: 20, heatCapacity: 1000, thermalConductivity: 0.026 ,pressure: 1, heatGeneration: 0 },
+    "sand": {type:"sand", state:"powder", density: 1500, temperature:20, heatCapacity: 830, thermalConductivity: 0.3 ,pressure:1, heatGeneration: 0 },
+    "water": {type:"water", state:"liquid", density: 1000, temperature:20, heatCapacity: 4180, thermalConductivity: 0.6 ,pressure:1, heatGeneration: 0 },
+    "uranium": {type:"uranium", state:"powder", density: 19100, temperature:400, heatCapacity: 116, thermalConductivity: 22.5 ,pressure:1, heatGeneration: 10 },
+    "wall": {type: "wall", state: "solid", density: Infinity, temperature: 20, heatCapacity: 0, thermalConductivity: 27 ,pressure: 1, heatGeneration: 0 },
 }
+const THERMAL_RATE = 0.1;
 
 const EMPTY_CELL = {...MATERIALS["air"]};
 const WALL_CELL = {...MATERIALS["wall"]};
@@ -32,6 +33,12 @@ let GRID = Array.from(
         () => ({...EMPTY_CELL})
     )
 );
+
+const NEIGHBOR_DIRECTIONS = [
+    [-1, -1], [0, -1], [1, -1],
+    [-1,  0],          [1,  0],
+    [-1,  1], [0,  1], [1,  1]
+];
 
 let GAME_OFFSET_X;
 let GAME_OFFSET_Y;
@@ -129,6 +136,112 @@ const CellsColors = {
     "uranium":[100, 230, 100],
 }
 
+function getNeighbors(x, y) {
+    let neighbors = [];
+
+    for (const [offsetX, offsetY] of NEIGHBOR_DIRECTIONS) {
+        const neighborX = x + offsetX;
+        const neighborY = y + offsetY;
+
+        const insideGrid =
+            neighborX >= 0 && neighborX < GRID_WIDTH &&
+            neighborY >= 0 && neighborY < GRID_HEIGHT;
+
+        neighbors.push({
+            x: neighborX,
+            y: neighborY,
+            cell: insideGrid ? GRID[neighborY][neighborX] : WALL_CELL
+        });
+    }
+
+    return neighbors;
+}
+
+function simulateThermalConduction() {
+    const temperatureChanges = Array.from(
+        { length: GRID_HEIGHT },
+        () => Array(GRID_WIDTH).fill(0)
+    );
+
+    for (let y = 0; y < GRID_HEIGHT; y++) {
+        for (let x = 0; x < GRID_WIDTH; x++) {
+            const current = GRID[y][x];
+            temperatureChanges[y][x] +=
+                current.heatGeneration * THERMAL_RATE;
+
+            // Une paroi est ici considérée comme maintenue à température fixe.
+            if (current.type === "wall" || current.heatCapacity <= 0) {
+                continue;
+            }
+
+            for (const neighbor of getNeighbors(x, y)) {
+                const other = neighbor.cell;
+
+                if (other.thermalConductivity <= 0) continue;
+
+                const conductivity =
+                    2 * current.thermalConductivity * other.thermalConductivity /
+                    (current.thermalConductivity + other.thermalConductivity);
+
+                const distanceFactor =
+                    neighbor.x !== x && neighbor.y !== y ? 1 / Math.sqrt(2) : 1;
+
+                const temperatureDifference =
+                    other.temperature - current.temperature;
+
+                temperatureChanges[y][x] +=
+                    temperatureDifference *
+                    conductivity *
+                    THERMAL_RATE *
+                    distanceFactor /
+                    current.heatCapacity;
+            }
+        }
+    }
+
+    for (let y = 0; y < GRID_HEIGHT; y++) {
+        for (let x = 0; x < GRID_WIDTH; x++) {
+            const current = GRID[y][x];
+
+            if (current.type !== "wall") {
+                current.temperature += temperatureChanges[y][x];
+            }
+        }
+    }
+}
+
+function getThermalColor(baseColor, temperature) {
+    const stops = [
+        {temp: -100, color: [0, 0, 100]},
+        {temp:    0, color: [0, 80, 255]},
+        {temp:   20, color: baseColor},
+        {temp:  100, color: [255, 220, 0]},
+        {temp:  300, color: [255, 80, 0]},
+        {temp:  600, color: [255, 0, 0]},
+        {temp: 1000, color: [255, 255, 255]}
+    ];
+
+    if (temperature <= stops[0].temp) return stops[0].color;
+    if (temperature >= stops[stops.length - 1].temp) {
+        return stops[stops.length - 1].color;
+    }
+
+    for (let i = 0; i < stops.length - 1; i++) {
+        const a = stops[i];
+        const b = stops[i + 1];
+
+        if (temperature >= a.temp && temperature <= b.temp) {
+            const t = (temperature - a.temp) / (b.temp - a.temp);
+
+            return [
+                Math.round(a.color[0] + (b.color[0] - a.color[0]) * t),
+                Math.round(a.color[1] + (b.color[1] - a.color[1]) * t),
+                Math.round(a.color[2] + (b.color[2] - a.color[2]) * t)
+            ];
+        }
+    }
+}
+
 function gameLoop() {
     startTime = performance.now();
 
@@ -181,7 +294,13 @@ function gameLoop() {
             for (let x = 0; x < GRID_WIDTH; x++) {
                 current = row[x];
                 if (current.type === "air") continue;
-                fillRect(ctx, GAME_OFFSET_X + x * CELL_SIZE, GAME_OFFSET_Y + y * CELL_SIZE, CELL_SIZE, CELL_SIZE + 1, CellsColors[current.type]);
+                const cellColor = getThermalColor(
+                    CellsColors[current.type] ?? [200, 200, 200],
+                    current.temperature
+                );
+                const cellX = GAME_OFFSET_X + x * CELL_SIZE
+                const cellY = GAME_OFFSET_Y + y * CELL_SIZE
+                fillRect(ctx, cellX, cellY, CELL_SIZE, CELL_SIZE + 1, cellColor);
             }
         }
         
@@ -197,6 +316,8 @@ function gameLoop() {
         
         // selection
         drawText(ctx, hoverSelection.type.toString(), GAME_OFFSET_X + 4, GAME_OFFSET_Y + 30, 13, ThemeColors["text"]);
+        drawText(ctx, hoverSelection.temperature.toString() + "°C", GAME_OFFSET_X + 4, GAME_OFFSET_Y + 47, 13, ThemeColors["text"]);
+        
         // fps
         if (loops % 15 === 0) FPS = Math.round(1 / (deltaTime ?? 1));
         drawText(ctx, "Fps: " + FPS.toString(), GAME_OFFSET_X + 4, GAME_OFFSET_Y + 13, 13, ThemeColors["text"]);
@@ -269,7 +390,8 @@ function gameLoop() {
                 }
             }
         }
-
+        // 
+        simulateThermalConduction();
     }
 
     if (running) {
