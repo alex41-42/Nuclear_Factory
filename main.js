@@ -15,13 +15,62 @@ const GRID_WIDTH = GAME_WIDTH / CELL_SIZE;
 const GRID_HEIGHT = GAME_HEIGHT / CELL_SIZE;
 
 const MATERIALS = {
-    "air": {type: "air", state: "gas", density: 1.20, temperature: 20, heatCapacity: 1000, thermalConductivity: 0.026 ,pressure: 1, heatGeneration: 0 },
-    "sand": {type:"sand", state:"powder", density: 1500, temperature:20, heatCapacity: 830, thermalConductivity: 0.3 ,pressure:1, heatGeneration: 0 },
-    "water": {type:"water", state:"liquid", density: 1000, temperature:20, heatCapacity: 4180, thermalConductivity: 0.6 ,pressure:1, heatGeneration: 0 },
-    "uranium": {type:"uranium", state:"powder", density: 19100, temperature:400, heatCapacity: 116, thermalConductivity: 22.5 ,pressure:1, heatGeneration: 10 },
-    "wall": {type: "wall", state: "solid", density: Infinity, temperature: 20, heatCapacity: 0, thermalConductivity: 27 ,pressure: 1, heatGeneration: 0 },
-}
-const THERMAL_RATE = 0.1;
+    "air": {
+        type: "air",
+        state: "gas",
+        density: 1.2,
+        temperature: 20,
+        heatCapacity: 1000,
+        thermalConductivity: 0.026,
+        pressure: 1,
+        heatGeneration: 0,
+    },
+    "sand": {
+        type: "sand",
+        state: "powder",
+        density: 1500,
+        temperature: 20,
+        heatCapacity: 830,
+        thermalConductivity: 0.3,
+        pressure: 1,
+        heatGeneration: 0,
+    },
+    "water": {
+        type: "water",
+        state: "liquid",
+        density: 1000,
+        temperature: 20,
+        heatCapacity: 4180,
+        thermalConductivity: 0.6,
+        pressure: 1,
+        heatGeneration: 0,
+    },
+    "uranium": {
+        type: "uranium",
+        state: "powder",
+        density: 19100,
+        temperature: 400,
+        heatCapacity: 116,
+        thermalConductivity: 22.5,
+        pressure: 1,
+        heatGeneration: 10,
+    },
+    "wall": {
+        type: "wall",
+        state: "solid",
+        density: Infinity,
+        thermalDensity: 2400,
+        temperature: 20,
+        heatCapacity: 840,
+        thermalConductivity: 1.4,
+        pressure: 1,
+        heatGeneration: 0,
+    },
+};
+
+const CELL_SIZE_METERS = 0.01;
+const THERMAL_TIME_STEP = 0.1;
+const THERMAL_RATE = THERMAL_TIME_STEP;
 
 const EMPTY_CELL = {...MATERIALS["air"]};
 const WALL_CELL = {...MATERIALS["wall"]};
@@ -158,7 +207,10 @@ function getNeighbors(x, y) {
 }
 
 function simulateThermalConduction() {
-    const temperatureChanges = Array.from(
+    const volume = CELL_SIZE_METERS ** 3;
+    const areaOverDistance = CELL_SIZE_METERS;
+
+    const energyChanges = Array.from(
         { length: GRID_HEIGHT },
         () => Array(GRID_WIDTH).fill(0)
     );
@@ -166,35 +218,43 @@ function simulateThermalConduction() {
     for (let y = 0; y < GRID_HEIGHT; y++) {
         for (let x = 0; x < GRID_WIDTH; x++) {
             const current = GRID[y][x];
-            temperatureChanges[y][x] +=
-                current.heatGeneration * THERMAL_RATE;
 
-            // Une paroi est ici considérée comme maintenue à température fixe.
-            if (current.type === "wall" || current.heatCapacity <= 0) {
-                continue;
-            }
+            const density = current.thermalDensity ?? current.density;
+            const capacity = density * current.heatCapacity * volume;
 
-            for (const neighbor of getNeighbors(x, y)) {
-                const other = neighbor.cell;
+            if (capacity <= 0 || !Number.isFinite(capacity)) continue;
 
-                if (other.thermalConductivity <= 0) continue;
+            energyChanges[y][x] += current.heatGeneration * THERMAL_TIME_STEP;
 
-                const conductivity =
-                    2 * current.thermalConductivity * other.thermalConductivity /
-                    (current.thermalConductivity + other.thermalConductivity);
+            const directions = [[1, 0], [0, 1]];
 
-                const distanceFactor =
-                    neighbor.x !== x && neighbor.y !== y ? 1 / Math.sqrt(2) : 1;
+            for (const [dx, dy] of directions) {
+                const nx = x + dx;
+                const ny = y + dy;
 
-                const temperatureDifference =
-                    other.temperature - current.temperature;
+                if (nx >= GRID_WIDTH || ny >= GRID_HEIGHT) continue;
 
-                temperatureChanges[y][x] +=
-                    temperatureDifference *
+                const other = GRID[ny][nx];
+
+                const otherDensity = other.thermalDensity ?? other.density;
+                const otherCapacity = otherDensity * other.heatCapacity * volume;
+
+                if (otherCapacity <= 0 || !Number.isFinite(otherCapacity)) continue;
+
+                const k1 = current.thermalConductivity;
+                const k2 = other.thermalConductivity;
+
+                if (k1 <= 0 || k2 <= 0) continue;
+
+                const conductivity = (2 * k1 * k2) / (k1 + k2);
+                const energy =
                     conductivity *
-                    THERMAL_RATE *
-                    distanceFactor /
-                    current.heatCapacity;
+                    areaOverDistance *
+                    (other.temperature - current.temperature) *
+                    THERMAL_TIME_STEP;
+
+                energyChanges[y][x] += energy;
+                energyChanges[ny][nx] -= energy;
             }
         }
     }
@@ -203,9 +263,12 @@ function simulateThermalConduction() {
         for (let x = 0; x < GRID_WIDTH; x++) {
             const current = GRID[y][x];
 
-            if (current.type !== "wall") {
-                current.temperature += temperatureChanges[y][x];
-            }
+            const density = current.thermalDensity ?? current.density;
+            const capacity = density * current.heatCapacity * volume;
+
+            if (capacity <= 0 || !Number.isFinite(capacity)) continue;
+
+            current.temperature += energyChanges[y][x] / capacity;
         }
     }
 }
