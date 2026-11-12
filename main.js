@@ -53,7 +53,7 @@ const MATERIALS = {
         heatCapacity: 116,
         thermalConductivity: 22.5,
         pressure: 1,
-        heatGeneration: 10,
+        heatGeneration: 1,
     },
     "wall": {
         type: "wall",
@@ -98,8 +98,8 @@ function resizeCanvas() {
     SCREEN_HEIGHT = window.innerHeight;
     canvas.width = SCREEN_WIDTH;
     canvas.height = SCREEN_HEIGHT;
-    GAME_OFFSET_X = (SCREEN_WIDTH - GAME_WIDTH) * 0.5;
-    GAME_OFFSET_Y = (SCREEN_HEIGHT - GAME_HEIGHT) * 0.5;
+    GAME_OFFSET_X = Math.floor((SCREEN_WIDTH - GAME_WIDTH) * 0.5);
+    GAME_OFFSET_Y = Math.floor((SCREEN_HEIGHT - GAME_HEIGHT) * 0.5);
 }
 
 window.addEventListener("resize", resizeCanvas);
@@ -206,101 +206,137 @@ function getNeighbors(x, y) {
     return neighbors;
 }
 
-function simulateThermalConduction() {
-    const volume = CELL_SIZE_METERS ** 3;
-    const areaOverDistance = CELL_SIZE_METERS;
-
-    const energyChanges = Array.from(
-        { length: GRID_HEIGHT },
-        () => Array(GRID_WIDTH).fill(0)
-    );
+function drawGame() {
+    fillRect(ctx, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, ThemeColors["font"]);
+    fillRect(ctx, GAME_OFFSET_X, GAME_OFFSET_Y, GAME_WIDTH, GAME_HEIGHT, [0, 0, 0]);
 
     for (let y = 0; y < GRID_HEIGHT; y++) {
+        const row = GRID[y];
+
         for (let x = 0; x < GRID_WIDTH; x++) {
-            const current = GRID[y][x];
+            const current = row[x];
+            if (current.type === "air") continue;
 
-            const density = current.thermalDensity ?? current.density;
-            const capacity = density * current.heatCapacity * volume;
+            const cellColor = CellsColors[current.type] ?? [0, 0, 0];
+            const cellX = GAME_OFFSET_X + x * CELL_SIZE;
+            const cellY = GAME_OFFSET_Y + y * CELL_SIZE;
 
-            if (capacity <= 0 || !Number.isFinite(capacity)) continue;
+            fillRect(ctx, cellX, cellY, CELL_SIZE, CELL_SIZE, cellColor);
+        }
+    }
 
-            energyChanges[y][x] += current.heatGeneration * THERMAL_TIME_STEP;
+    hoverGridX = max(0, min(
+        Math.floor((mouseX - GAME_OFFSET_X) / CELL_SIZE),
+        GRID_WIDTH - hoverSize
+    ));
 
-            const directions = [[1, 0], [0, 1]];
+    hoverGridY = max(0, min(
+        Math.floor((mouseY - GAME_OFFSET_Y) / CELL_SIZE),
+        GRID_HEIGHT - hoverSize
+    ));
 
-            for (const [dx, dy] of directions) {
-                const nx = x + dx;
-                const ny = y + dy;
+    const hoverSelection = GRID[hoverGridY][hoverGridX];
 
-                if (nx >= GRID_WIDTH || ny >= GRID_HEIGHT) continue;
+    hoverX = GAME_OFFSET_X + hoverGridX * CELL_SIZE;
+    hoverY = GAME_OFFSET_Y + hoverGridY * CELL_SIZE;
 
-                const other = GRID[ny][nx];
+    drawRect(ctx, hoverX, hoverY, hoverSize * CELL_SIZE, hoverSize * CELL_SIZE, [255, 255, 255]);
 
-                const otherDensity = other.thermalDensity ?? other.density;
-                const otherCapacity = otherDensity * other.heatCapacity * volume;
+    drawText(ctx, hoverSelection.type.toString(), GAME_OFFSET_X + 4, GAME_OFFSET_Y + 30, 13, ThemeColors["text"]);
+    drawText(ctx, hoverSelection.temperature.toString() + "°C", GAME_OFFSET_X + 4, GAME_OFFSET_Y + 47, 13, ThemeColors["text"]);
 
-                if (otherCapacity <= 0 || !Number.isFinite(otherCapacity)) continue;
+    if (loops % 15 === 0) FPS = Math.round(1 / (deltaTime ?? 1));
+    drawText(ctx, "Fps: " + FPS.toString(), GAME_OFFSET_X + 4, GAME_OFFSET_Y + 13, 13, ThemeColors["text"]);
+}
 
-                const k1 = current.thermalConductivity;
-                const k2 = other.thermalConductivity;
+function handleGameInput() {
+    if (leftClick) {
+        for (let y = 0; y < hoverSize; y++) {
+            const row = GRID[hoverGridY + y];
 
-                if (k1 <= 0 || k2 <= 0) continue;
+            for (let x = 0; x < hoverSize; x++) {
+                if (row[hoverGridX + x].type === "air") {
+                    row[hoverGridX + x] = { ...hoverCell };
+                }
+            }
+        }
+    }
+    else if (rightClick) {
+        for (let y = 0; y < hoverSize; y++) {
+            const row = GRID[hoverGridY + y];
 
-                const conductivity = (2 * k1 * k2) / (k1 + k2);
-                const energy =
-                    conductivity *
-                    areaOverDistance *
-                    (other.temperature - current.temperature) *
-                    THERMAL_TIME_STEP;
-
-                energyChanges[y][x] += energy;
-                energyChanges[ny][nx] -= energy;
+            for (let x = 0; x < hoverSize; x++) {
+                row[hoverGridX + x] = { ...EMPTY_CELL };
             }
         }
     }
 
-    for (let y = 0; y < GRID_HEIGHT; y++) {
-        for (let x = 0; x < GRID_WIDTH; x++) {
-            const current = GRID[y][x];
-
-            const density = current.thermalDensity ?? current.density;
-            const capacity = density * current.heatCapacity * volume;
-
-            if (capacity <= 0 || !Number.isFinite(capacity)) continue;
-
-            current.temperature += energyChanges[y][x] / capacity;
-        }
+    if (keys['Backspace']) {
+        GRID = Array.from(
+            { length: GRID_HEIGHT },
+            () => Array.from(
+                { length: GRID_WIDTH },
+                () => ({ ...EMPTY_CELL })
+            )
+        );
     }
+
+    if (keys['&']) hoverCell = MATERIALS["water"];
+    if (keys['é']) hoverCell = MATERIALS["sand"];
+    if (keys['"']) hoverCell = MATERIALS["wall"];
+    if (keys["'"]) hoverCell = MATERIALS["uranium"];
 }
 
-function getThermalColor(baseColor, temperature) {
-    const stops = [
-        {temp: -100, color: [0, 0, 100]},
-        {temp:    0, color: [0, 80, 255]},
-        {temp:   20, color: baseColor},
-        {temp:  100, color: [255, 220, 0]},
-        {temp:  300, color: [255, 80, 0]},
-        {temp:  600, color: [255, 0, 0]},
-        {temp: 1000, color: [255, 255, 255]}
-    ];
+function simulateMatter() {
+    for (let y = GRID_HEIGHT - 2; y >= 0; y--) {
+        const previous_row = GRID[y - 1] ?? Array.from({ length: GRID_WIDTH }, () => ({...WALL_CELL}));
+        const row = GRID[y];
+        const next_row = GRID[y + 1];
 
-    if (temperature <= stops[0].temp) return stops[0].color;
-    if (temperature >= stops[stops.length - 1].temp) {
-        return stops[stops.length - 1].color;
-    }
+        for (let x = 0; x < GRID_WIDTH; x++) {
+            const current = row[x];
 
-    for (let i = 0; i < stops.length - 1; i++) {
-        const a = stops[i];
-        const b = stops[i + 1];
+            const current_left = row[x - 1] ?? WALL_CELL;
+            const current_right = row[x + 1] ?? WALL_CELL;
 
-        if (temperature >= a.temp && temperature <= b.temp) {
-            const t = (temperature - a.temp) / (b.temp - a.temp);
+            const down = next_row[x];
+            const down_left = next_row[x - 1] ?? WALL_CELL;
+            const down_right = next_row[x + 1] ?? WALL_CELL;
 
-            return [
-                Math.round(a.color[0] + (b.color[0] - a.color[0]) * t),
-                Math.round(a.color[1] + (b.color[1] - a.color[1]) * t),
-                Math.round(a.color[2] + (b.color[2] - a.color[2]) * t)
-            ];
+            const up = previous_row[x] ?? WALL_CELL;
+            const up_left = previous_row[x - 1] ?? WALL_CELL;
+            const up_right = previous_row[x + 1] ?? WALL_CELL;
+
+            const n = Math.random();
+
+            if (current.state === "liquid" || current.state === "powder") {
+                if (current.density > down.density) {
+                    next_row[x] = current;
+                    row[x] = down;
+                }
+                else if (current.density > down_left.density) {
+                    next_row[x - 1] = current;
+                    row[x] = down_left;
+                }
+                else if (current.density > down_right.density) {
+                    next_row[x + 1] = current;
+                    row[x] = down_right;
+                }
+                else if (current.state === "liquid" && n < 0.33 && current.density > current_left.density) {
+                    row[x - 1] = current;
+                    row[x] = current_left;
+                }
+                else if (current.state === "liquid" && n > 0.66 && current.density > current_right.density) {
+                    row[x + 1] = current;
+                    row[x] = current_right;
+                }
+            }
+            if (current.state === "liquid") {
+                if (current.temperature > up.temperature && current.type === up.type && current.state === up.state) {
+                    previous_row[x] = current;
+                    row[x] = up;
+                }
+            }
         }
     }
 }
@@ -346,115 +382,12 @@ function gameLoop() {
     }
 
     else if (state === "Play") {
-        // -- draw -- 
-        // font
-        fillRect(ctx, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, ThemeColors["font"]);
-        fillRect(ctx, GAME_OFFSET_X, GAME_OFFSET_Y, GAME_WIDTH, GAME_HEIGHT, [0, 0, 0]);
+        drawGame();
 
-        // grid
-        for (let y = 0; y < GRID_HEIGHT; y++) {
-            row = GRID[y];
-            for (let x = 0; x < GRID_WIDTH; x++) {
-                current = row[x];
-                if (current.type === "air") continue;
-                const cellColor = getThermalColor(
-                    CellsColors[current.type] ?? [200, 200, 200],
-                    current.temperature
-                );
-                const cellX = GAME_OFFSET_X + x * CELL_SIZE
-                const cellY = GAME_OFFSET_Y + y * CELL_SIZE
-                fillRect(ctx, cellX, cellY, CELL_SIZE, CELL_SIZE + 1, cellColor);
-            }
-        }
-        
-        // hover
-        hoverGridX = max(0, min(Math.floor((mouseX - GAME_OFFSET_X) / CELL_SIZE), GRID_WIDTH - hoverSize));
-        hoverGridY = max(0, min(Math.floor((mouseY - GAME_OFFSET_Y) / CELL_SIZE), GRID_HEIGHT - hoverSize));
-        hoverSelection = GRID[hoverGridY][hoverGridX];
+        handleGameInput();
 
-        hoverX = GAME_OFFSET_X + hoverGridX * CELL_SIZE;
-        hoverY = GAME_OFFSET_Y + hoverGridY * CELL_SIZE;
+        simulateMatter();
 
-        drawRect(ctx, hoverX, hoverY, hoverSize * CELL_SIZE, hoverSize * CELL_SIZE, [255, 255, 255]);
-        
-        // selection
-        drawText(ctx, hoverSelection.type.toString(), GAME_OFFSET_X + 4, GAME_OFFSET_Y + 30, 13, ThemeColors["text"]);
-        drawText(ctx, hoverSelection.temperature.toString() + "°C", GAME_OFFSET_X + 4, GAME_OFFSET_Y + 47, 13, ThemeColors["text"]);
-        
-        // fps
-        if (loops % 15 === 0) FPS = Math.round(1 / (deltaTime ?? 1));
-        drawText(ctx, "Fps: " + FPS.toString(), GAME_OFFSET_X + 4, GAME_OFFSET_Y + 13, 13, ThemeColors["text"]);
-        
-        // click
-        if (leftClick) {
-            for (let y = 0; y < hoverSize; y++) {
-                let row = GRID[hoverGridY + y];
-                for (let x = 0; x < hoverSize; x++) {
-                    if (row[hoverGridX + x].type === "air") row[hoverGridX + x] = {...hoverCell};
-                }
-            }
-        }
-        else if (rightClick) {
-            for (let y = 0; y < hoverSize; y++) {
-                let row = GRID[hoverGridY + y];
-                for (let x = 0; x < hoverSize; x++) {
-                    row[hoverGridX + x] = {...EMPTY_CELL};
-                }
-            }
-        }
-
-        if (keys['Backspace']) {
-            GRID = Array.from(
-                { length: GRID_HEIGHT },
-                () => Array.from(
-                    { length: GRID_WIDTH },
-                    () => ({...EMPTY_CELL})
-                )
-            );
-        }
-        if (keys['&']) hoverCell = MATERIALS["water"];
-        if (keys['é']) hoverCell = MATERIALS["sand"];
-        if (keys['"']) hoverCell = MATERIALS["wall"];
-        if (keys["'"]) hoverCell = MATERIALS["uranium"];
-        
-        
-        // simulate
-        for (let y = GRID_HEIGHT - 2; y >= 0; y--) {
-            let previous_row = GRID[y - 1] ?? [];
-            let row = GRID[y];
-            let next_row = GRID[y + 1];
-
-            for (let x = 0; x < GRID_WIDTH; x++) {
-                let current = row[x];
-                let current_left = row[x - 1] ?? WALL_CELL;
-                let current_right = row[x + 1] ?? WALL_CELL;
-                let down = next_row[x];
-                let down_left = next_row[x - 1] ?? WALL_CELL;
-                let down_right = next_row[x + 1] ?? WALL_CELL;
-
-                let n = Math.random();
-                if (current.state === "liquid" || current.state === "powder") {
-                    if (current.density > down.density) {
-                        next_row[x] = current;
-                        row[x] = down;
-                    }else if (current.density > down_left.density) {
-                        next_row[x - 1] = current;
-                        row[x] = down_left;
-                    }else if (current.density > down_right.density) {
-                        next_row[x + 1] = current;
-                        row[x] = down_right;
-                    }else if (current.state === "liquid" && n < 0.33 && current.density > current_left.density) {
-                        row[x - 1] = current;
-                        row[x] = current_left;
-                    }else if (current.state === "liquid" && n > 0.66 && current.density > current_right.density) {
-                        row[x + 1] = current;
-                        row[x] = current_right;
-                    }
-                }
-            }
-        }
-        // 
-        simulateThermalConduction();
     }
 
     if (running) {
