@@ -29,11 +29,10 @@ let GRID = Array.from(
     )
 );
 
-const NEIGHBOR_DIRECTIONS = [
-    [-1, -1], [0, -1], [1, -1],
-    [-1,  0],          [1,  0],
-    [-1,  1], [0,  1], [1,  1]
-];
+let ENERGY_BUFFER = Array.from(
+    { length: GRID_HEIGHT },
+    () => Array(GRID_WIDTH).fill(0)
+);
 
 let GAME_OFFSET_X;
 let GAME_OFFSET_Y;
@@ -129,6 +128,56 @@ const CellsColors = {
     "sand":[255, 220, 100],
     "wall":[150, 150, 150],
     "uranium":[100, 230, 100],
+}
+
+const NEIGHBOR_DIRECTIONS = [
+    [-1, -1], [0, -1], [1, -1],
+    [-1,  0],          [1,  0],
+    [-1,  1], [0,  1], [1,  1]
+];
+
+const THERMAL_DIRECTIONS = [
+    [1, 0], // Droite
+    [0, 1]  // Bas
+];
+
+const THERMAL_SAFETY_FACTOR = 0.45;
+
+function getThermalCapacity(cell) {
+    const density = cell.thermalDensity ?? cell.density;
+
+    if (
+        !Number.isFinite(density) ||
+        density <= 0 ||
+        cell.heatCapacity <= 0
+    ) {
+        return 0;
+    }
+
+    const volume =
+        CELL_SIZE_METERS *
+        CELL_SIZE_METERS *
+        CELL_SIZE_METERS;
+
+    const mass = density * volume;
+
+    return mass * cell.heatCapacity;
+}
+
+function getThermalConductance(cellA, cellB) {
+    const k1 = cellA.thermalConductivity;
+    const k2 = cellB.thermalConductivity;
+
+    if (k1 <= 0 || k2 <= 0) return 0;
+
+    // Moyenne harmonique des conductivités
+    const k = (2 * k1 * k2) / (k1 + k2);
+
+    // Conductance thermique : G = k * surface / distance
+    const surface = CELL_SIZE_METERS * CELL_SIZE_METERS;
+    const distance = CELL_SIZE_METERS;
+
+    return k * surface / distance;
 }
 
 function getNeighbors(x, y) {
@@ -277,11 +326,131 @@ function simulateMatter() {
                     row[x] = current_right;
                 }
             }
-            if (current.state === "liquid") {
-                if (current.temperature > up.temperature && current.type === up.type && current.state === up.state) {
-                    previous_row[x] = current;
-                    row[x] = up;
+            if (current.state === "gas" || current.state === "liquid") {
+                if (current.temperature > up.temperature || current.density > up.density) {
+                    GRID[y - 1][x] = current;
+                    GRID[y][x] = up;
                 }
+            }
+        }
+    }
+}
+
+function simulateThermal() {
+
+    const capacities = [];
+    const conductanceSums = [];
+
+    // 1. Calcul des capacités thermiques
+    for (let y = 0; y < GRID_HEIGHT; y++) {
+        capacities[y] = [];
+        conductanceSums[y] = [];
+
+        for (let x = 0; x < GRID_WIDTH; x++) {
+            capacities[y][x] = getThermalCapacity(GRID[y][x]);
+            conductanceSums[y][x] = 0;
+        }
+    }
+
+    // 2. Calcul de la conductance totale autour de chaque cellule
+    for (let y = 0; y < GRID_HEIGHT; y++) {
+        for (let x = 0; x < GRID_WIDTH; x++) {
+
+            const current = GRID[y][x];
+
+            if (capacities[y][x] <= 0) continue;
+
+            for (const [dx, dy] of THERMAL_DIRECTIONS) {
+
+                const nx = x + dx;
+                const ny = y + dy;
+
+                if (nx >= GRID_WIDTH || ny >= GRID_HEIGHT) continue;
+
+                const other = GRID[ny][nx];
+
+                if (capacities[ny][nx] <= 0) continue;
+
+                const conductance =
+                    getThermalConductance(current, other);
+
+                conductanceSums[y][x] += conductance;
+                conductanceSums[ny][nx] += conductance;
+            }
+        }
+    }
+
+    // 3. Détermination du nombre de sous-étapes nécessaires
+    let maxRate = 0;
+
+    for (let y = 0; y < GRID_HEIGHT; y++) {
+        for (let x = 0; x < GRID_WIDTH; x++) {
+
+            if (capacities[y][x] <= 0) continue;
+
+            const rate =
+                conductanceSums[y][x] / capacities[y][x];
+
+            maxRate = Math.max(maxRate, rate);
+        }
+    }
+
+    const substeps = Math.max(
+        1,
+        Math.ceil(
+            THERMAL_RATE * maxRate / THERMAL_SAFETY_FACTOR
+        )
+    );
+
+    const deltaTime = THERMAL_RATE / substeps;
+
+    // 4. Simulation des échanges thermiques
+    for (let step = 0; step < substeps; step++) {
+
+        // Calcul des échanges
+        for (let y = 0; y < GRID_HEIGHT; y++) {
+            for (let x = 0; x < GRID_WIDTH; x++) {
+
+                const current = GRID[y][x];
+
+                if (capacities[y][x] <= 0) continue;
+
+                for (const [dx, dy] of THERMAL_DIRECTIONS) {
+
+                    const nx = x + dx;
+                    const ny = y + dy;
+
+                    if (nx >= GRID_WIDTH || ny >= GRID_HEIGHT) continue;
+
+                    const other = GRID[ny][nx];
+
+                    if (capacities[ny][nx] <= 0) continue;
+
+                    const conductance =
+                        getThermalConductance(current, other);
+
+                    const energy =
+                        conductance *
+                        (current.temperature - other.temperature) *
+                        deltaTime;
+
+                    ENERGY_BUFFER[y][x] -= energy;
+                    ENERGY_BUFFER[ny][nx] += energy;
+                }
+            }
+        }
+
+        // Application des échanges
+        for (let y = 0; y < GRID_HEIGHT; y++) {
+            for (let x = 0; x < GRID_WIDTH; x++) {
+
+                if (capacities[y][x] > 0) {
+
+                    GRID[y][x].temperature +=
+                        ENERGY_BUFFER[y][x] / capacities[y][x];
+                }
+
+                ENERGY_BUFFER[y][x] = 0;
             }
         }
     }
@@ -333,6 +502,8 @@ function gameLoop() {
         handleGameInput();
 
         simulateMatter();
+
+        simulateThermal();
 
     }
 
