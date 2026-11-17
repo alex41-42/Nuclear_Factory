@@ -34,6 +34,19 @@ let ENERGY_BUFFER = Array.from(
     () => Array(GRID_WIDTH).fill(0)
 );
 
+// Buffer de la simulation de matière :
+// 1 = la cellule a déjà été déplacée pendant ce tick
+let MATTER_MOVED = Array.from(
+    { length: GRID_HEIGHT },
+    () => new Uint8Array(GRID_WIDTH)
+);
+
+const SETTLE_MOVES = [
+    [ 0, 1],   // Bas
+    [-1, 1],   // Bas gauche
+    [ 1, 1]    // Bas droite
+];
+
 let GAME_OFFSET_X;
 let GAME_OFFSET_Y;
 
@@ -282,58 +295,125 @@ function handleGameInput() {
     if (keys["'"]) hoverCell = MATERIALS["uranium"];
 }
 
+// Sens de balayage des colonnes, inversé à chaque tick
+let MATTER_SCAN_LEFT_TO_RIGHT = true;
+
+function clearMatterBuffer() {
+    for (const row of MATTER_MOVED) {
+        row.fill(0);
+    }
+}
+
+function isInsideGrid(x, y) {
+    return x >= 0 && x < GRID_WIDTH &&
+           y >= 0 && y < GRID_HEIGHT;
+}
+
+// Une cellule peut recevoir un déplacement seulement si elle existe
+// et n'a pas déjà bougé pendant ce tick
+function canMoveInto(x, y) {
+    return isInsideGrid(x, y) && MATTER_MOVED[y][x] === 0;
+}
+
+// Échange deux cellules : aucune cellule n'est créée ni perdue.
+// Seule la destination de la cellule active est marquée :
+// la cellule déplacée passivement reste disponible pour les autres.
+function swapCells(x1, y1, x2, y2) {
+    const temp = GRID[y1][x1];
+
+    GRID[y1][x1] = GRID[y2][x2];
+    GRID[y2][x2] = temp;
+
+    MATTER_MOVED[y2][x2] = 1;
+}
+
+// Chute (poudres et liquides), puis étalement latéral (liquides)
+function trySettle(x, y, current) {
+    // Ordre des diagonales tiré au hasard pour supprimer le biais gauche/droite
+    const firstDiagonal = Math.random() < 0.5 ? -1 : 1;
+
+    // Bas, puis première diagonale, puis seconde diagonale
+    for (let i = 0; i < 3; i++) {
+        let dx = 0;
+
+        if (i === 1) dx = firstDiagonal;
+        else if (i === 2) dx = -firstDiagonal;
+
+        const targetX = x + dx;
+        const targetY = y + 1;
+
+        if (!canMoveInto(targetX, targetY)) continue;
+
+        if (current.density > GRID[targetY][targetX].density) {
+            swapCells(x, y, targetX, targetY);
+            return true;
+        }
+    }
+
+    if (current.state !== "liquid") return false;
+
+    const n = Math.random();
+    let dx = 0;
+
+    if (n < 0.33) dx = -1;
+    else if (n > 0.66) dx = 1;
+    else return false;
+
+    const targetX = x + dx;
+
+    if (!canMoveInto(targetX, y)) return false;
+
+    if (current.density > GRID[y][targetX].density) {
+        swapCells(x, y, targetX, y);
+        return true;
+    }
+
+    return false;
+}
+
+// Convection : un fluide chaud monte au-dessus du même fluide plus froid
+function tryConvection(x, y, current) {
+    const targetY = y - 1;
+
+    if (!canMoveInto(x, targetY)) return false;
+
+    const up = GRID[targetY][x];
+
+    if (up.type !== current.type || up.state !== current.state) return false;
+
+    if (current.temperature > up.temperature) {
+        swapCells(x, y, x, targetY);
+        return true;
+    }
+
+    return false;
+}
+
 function simulateMatter() {
-    for (let y = GRID_HEIGHT - 2; y >= 0; y--) {
-        const previous_row = GRID[y - 1] ?? Array.from({ length: GRID_WIDTH }, () => ({...WALL_CELL}));
-        const row = GRID[y];
-        const next_row = GRID[y + 1];
+    clearMatterBuffer();
 
-        for (let x = 0; x < GRID_WIDTH; x++) {
-            const current = row[x];
+    for (let y = GRID_HEIGHT - 1; y >= 0; y--) {
+        for (let i = 0; i < GRID_WIDTH; i++) {
 
-            const current_left = row[x - 1] ?? WALL_CELL;
-            const current_right = row[x + 1] ?? WALL_CELL;
+            const x = MATTER_SCAN_LEFT_TO_RIGHT
+                ? i
+                : GRID_WIDTH - 1 - i;
 
-            const down = next_row[x];
-            const down_left = next_row[x - 1] ?? WALL_CELL;
-            const down_right = next_row[x + 1] ?? WALL_CELL;
+            if (MATTER_MOVED[y][x] === 1) continue;
 
-            const up = previous_row[x] ?? WALL_CELL;
-            const up_left = previous_row[x - 1] ?? WALL_CELL;
-            const up_right = previous_row[x + 1] ?? WALL_CELL;
+            const current = GRID[y][x];
 
-            const n = Math.random();
-
-            if (current.state === "liquid" || current.state === "powder") {
-                if (current.density > down.density) {
-                    next_row[x] = current;
-                    row[x] = down;
-                }
-                else if (current.density > down_left.density) {
-                    next_row[x - 1] = current;
-                    row[x] = down_left;
-                }
-                else if (current.density > down_right.density) {
-                    next_row[x + 1] = current;
-                    row[x] = down_right;
-                }
-                else if (current.state === "liquid" && n < 0.33 && current.density > current_left.density) {
-                    row[x - 1] = current;
-                    row[x] = current_left;
-                }
-                else if (current.state === "liquid" && n > 0.66 && current.density > current_right.density) {
-                    row[x + 1] = current;
-                    row[x] = current_right;
-                }
+            if (current.state === "powder" || current.state === "liquid") {
+                if (trySettle(x, y, current)) continue;
             }
+
             if (current.state === "gas" || current.state === "liquid") {
-                if (current.temperature > up.temperature || current.density > up.density) {
-                    GRID[y - 1][x] = current;
-                    GRID[y][x] = up;
-                }
+                tryConvection(x, y, current);
             }
         }
     }
+
+    MATTER_SCAN_LEFT_TO_RIGHT = !MATTER_SCAN_LEFT_TO_RIGHT;
 }
 
 function simulateThermal() {
