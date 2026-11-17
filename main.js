@@ -41,12 +41,6 @@ let MATTER_MOVED = Array.from(
     () => new Uint8Array(GRID_WIDTH)
 );
 
-const SETTLE_MOVES = [
-    [ 0, 1],   // Bas
-    [-1, 1],   // Bas gauche
-    [ 1, 1]    // Bas droite
-];
-
 let GAME_OFFSET_X;
 let GAME_OFFSET_Y;
 
@@ -114,7 +108,8 @@ const ThemeColors = {
 // Loop
 let running = true;
 let loops = 0;
-let state = "Menu"
+let state = "Menu";
+let gridType = "Normal";
 
 let startTime;
 let endTime;
@@ -214,7 +209,7 @@ function getNeighbors(x, y) {
     return neighbors;
 }
 
-function drawGame() {
+function drawGame(gridType) {
     fillRect(ctx, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, ThemeColors["font"]);
     fillRect(ctx, GAME_OFFSET_X, GAME_OFFSET_Y, GAME_WIDTH, GAME_HEIGHT, [0, 0, 0]);
 
@@ -223,9 +218,29 @@ function drawGame() {
 
         for (let x = 0; x < GRID_WIDTH; x++) {
             const current = row[x];
-            if (current.type === "air") continue;
+            // if (current.type === "air") continue;
 
-            const cellColor = CellsColors[current.type] ?? [0, 0, 0];
+            let cellColor = [0, 0, 0];
+            if (gridType === "Normal") {
+                 cellColor = CellsColors[current.type] ?? [0, 0, 0];
+            }
+            else if (gridType === "Temperature") {
+                const temp = current.temperature;
+                const minTemp = 20;
+                const maxTemp = 500;
+
+                // Racine carrée : les petits écarts restent visibles
+                const t = Math.sqrt(
+                    Math.min(1, Math.max(0, (temp - minTemp) / (maxTemp - minTemp)))
+                );
+
+                cellColor = [
+                    10 + Math.floor(245 * t),
+                    10,
+                    10
+                ];
+            }
+
             const cellX = GAME_OFFSET_X + x * CELL_SIZE;
             const cellY = GAME_OFFSET_Y + y * CELL_SIZE;
 
@@ -293,6 +308,9 @@ function handleGameInput() {
     if (keys['é']) hoverCell = MATERIALS["sand"];
     if (keys['"']) hoverCell = MATERIALS["wall"];
     if (keys["'"]) hoverCell = MATERIALS["uranium"];
+
+    if (keys['1']) gridType = "Normal";
+    if (keys['2']) gridType = "Temperature";
 }
 
 // Sens de balayage des colonnes, inversé à chaque tick
@@ -371,19 +389,29 @@ function trySettle(x, y, current) {
     return false;
 }
 
-// Convection : un fluide chaud monte au-dessus du même fluide plus froid
+// Convection : un fluide chaud monte en échangeant sa place
+// avec le même fluide plus froid (au-dessus ou en diagonale haute)
 function tryConvection(x, y, current) {
     const targetY = y - 1;
 
-    if (!canMoveInto(x, targetY)) return false;
+    // Tout droit d'abord, puis les deux diagonales dans un ordre aléatoire
+    // (évite un biais gauche/droite)
+    const firstSide = Math.random() < 0.5 ? -1 : 1;
+    const offsets = [0, firstSide, -firstSide];
 
-    const up = GRID[targetY][x];
+    for (const dx of offsets) {
+        const targetX = x + dx;
 
-    if (up.type !== current.type || up.state !== current.state) return false;
+        if (!canMoveInto(targetX, targetY)) continue;
 
-    if (current.temperature > up.temperature) {
-        swapCells(x, y, x, targetY);
-        return true;
+        const other = GRID[targetY][targetX];
+
+        if (other.type !== current.type || other.state !== current.state) continue;
+
+        if (current.temperature > other.temperature) {
+            swapCells(x, y, targetX, targetY);
+            return true;
+        }
     }
 
     return false;
@@ -577,7 +605,7 @@ function gameLoop() {
     }
 
     else if (state === "Play") {
-        drawGame();
+        drawGame(gridType);
 
         handleGameInput();
 
