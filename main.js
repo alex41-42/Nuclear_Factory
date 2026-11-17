@@ -14,60 +14,6 @@ const CELL_SIZE = 10;
 const GRID_WIDTH = GAME_WIDTH / CELL_SIZE;
 const GRID_HEIGHT = GAME_HEIGHT / CELL_SIZE;
 
-const MATERIALS = {
-    "air": {
-        type: "air",
-        state: "gas",
-        density: 1.2,
-        temperature: 20,
-        heatCapacity: 1000,
-        thermalConductivity: 0.026,
-        pressure: 1,
-        heatGeneration: 0,
-    },
-    "sand": {
-        type: "sand",
-        state: "powder",
-        density: 1500,
-        temperature: 20,
-        heatCapacity: 830,
-        thermalConductivity: 0.3,
-        pressure: 1,
-        heatGeneration: 0,
-    },
-    "water": {
-        type: "water",
-        state: "liquid",
-        density: 1000,
-        temperature: 20,
-        heatCapacity: 4180,
-        thermalConductivity: 0.6,
-        pressure: 1,
-        heatGeneration: 0,
-    },
-    "uranium": {
-        type: "uranium",
-        state: "powder",
-        density: 19100,
-        temperature: 400,
-        heatCapacity: 116,
-        thermalConductivity: 22.5,
-        pressure: 1,
-        heatGeneration: 1,
-    },
-    "wall": {
-        type: "wall",
-        state: "solid",
-        density: Infinity,
-        thermalDensity: 2400,
-        temperature: 20,
-        heatCapacity: 840,
-        thermalConductivity: 1.4,
-        pressure: 1,
-        heatGeneration: 0,
-    },
-};
-
 const CELL_SIZE_METERS = 0.01;
 const THERMAL_TIME_STEP = 0.1;
 const THERMAL_RATE = THERMAL_TIME_STEP;
