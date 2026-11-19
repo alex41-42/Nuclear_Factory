@@ -1,6 +1,6 @@
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
-// const PI = Math.PI;
+const PI = Math.PI;
 // const sqrt = Math.sqrt;
 const min = Math.min
 const max = Math.max
@@ -15,8 +15,24 @@ const GRID_WIDTH = GAME_WIDTH / CELL_SIZE;
 const GRID_HEIGHT = GAME_HEIGHT / CELL_SIZE;
 
 const CELL_SIZE_METERS = 0.01;
-const THERMAL_TIME_STEP = 0.1;
-const THERMAL_RATE = THERMAL_TIME_STEP;
+
+// ---------------------------------------------------------------------------
+// Temps de simulation
+// ---------------------------------------------------------------------------
+// Le moteur avance par "ticks" de durée fixe, quel que soit le FPS de l'écran.
+//   TICK_REAL : durée réelle d'un tick (s)            -> 60 ticks par seconde réelle
+//   TIME_SCALE: secondes simulées par seconde réelle  -> 10 = le jeu va 10x plus vite que la réalité
+//   SIM_DT    : durée SIMULÉE d'un tick (s)           -> c'est CE dt que la physique utilise
+// Ne jamais utiliser le temps réel entre deux images (deltaTime) dans la physique.
+const TICK_REAL = 1 / 60;
+const TIME_SCALE = 10;
+const SIM_DT = TICK_REAL * TIME_SCALE;
+
+// Protection contre la "spirale de la mort" (navigateur ralenti, onglet en arrière-plan) :
+// on ne rattrape jamais plus de MAX_STEPS_PER_FRAME ticks par image, et le retard
+// accumulé au-delà de MAX_FRAME_TIME secondes réelles est abandonné.
+const MAX_FRAME_TIME = 0.25;
+const MAX_STEPS_PER_FRAME = 5;
 
 const EMPTY_CELL = {...MATERIALS["air"]};
 const WALL_CELL = {...MATERIALS["wall"]};
@@ -58,14 +74,17 @@ window.addEventListener("resize", resizeCanvas);
 resizeCanvas();
 
 // Keys
+// On stocke e.code (position PHYSIQUE de la touche : "Digit1", "KeyT"...) et non e.key.
+// e.key dépend de la disposition (AZERTY : "&" ou "1" selon Shift), donc le keyup
+// pouvait ne pas correspondre au keydown et laisser une touche "bloquée".
 const keys = {};
 
 document.addEventListener("keydown", (e) => {
-    keys[e.key] = true;
+    keys[e.code] = true;
 });
 
 document.addEventListener("keyup", (e) => {
-    keys[e.key] = false;
+    keys[e.code] = false;
 });
 
 // Mouse
@@ -96,13 +115,27 @@ canvas.addEventListener("contextmenu", (e) => {
     e.preventDefault();
 });
 
+// Perte de focus (Alt+Tab, clic hors de la fenêtre, onglet masqué) : le navigateur
+// n'envoie plus keyup/mouseup, donc on remet tout à zéro pour éviter les entrées bloquées.
+function resetInputs() {
+    for (const code in keys) keys[code] = false;
+    onClick = false;
+    leftClick = false;
+    rightClick = false;
+}
+
+window.addEventListener("blur", resetInputs);
+document.addEventListener("visibilitychange", () => {
+    if (document.hidden) resetInputs();
+});
+
 // Theme color
 const ThemeColors = {
     "font" : [50, 50, 50],
     "title" : [255, 255, 255],
     "text" : [200, 200, 200],
     "sel_text" : [200, 220, 200],
-    
+
 };
 
 // Loop
@@ -111,10 +144,14 @@ let loops = 0;
 let state = "Menu";
 let gridType = "Normal";
 
-let startTime;
-let endTime;
-let deltaTime = 0;
+let deltaTime = 0;      // temps RÉEL écoulé entre deux images (s) : affichage / accumulateur uniquement
+let lastFrameTime = null;
+let accumulator = 0;    // temps réel (s) en attente d'être converti en ticks de simulation
+let simTime = 0;        // temps SIMULÉ total écoulé (s)
+
 let FPS = 0;
+let fpsFrames = 0;
+let fpsTimer = 0;
 
 // Menu
 let selectedOption = 0;
@@ -125,8 +162,8 @@ let lastPress = performance.now();
 let hoverSize = 5; // by cell
 let hoverX = mouseX;
 let hoverY = mouseY;
-let hoverGridX;
-let hoverGridY;
+let hoverGridX = 0;
+let hoverGridY = 0;
 let lastClick = performance.now();
 let hoverCell = {...EMPTY_CELL};
 
@@ -212,6 +249,24 @@ function getNeighbors(x, y) {
     return neighbors;
 }
 
+// Calcule la zone survolée par la souris (en cellules et en pixels).
+// Séparé de drawGame : handleGameInput en dépend, et l'ordre d'appel ne doit plus
+// dépendre du dessin.
+function updateHover() {
+    hoverGridX = max(0, min(
+        Math.floor((mouseX - GAME_OFFSET_X) / CELL_SIZE),
+        GRID_WIDTH - hoverSize
+    ));
+
+    hoverGridY = max(0, min(
+        Math.floor((mouseY - GAME_OFFSET_Y) / CELL_SIZE),
+        GRID_HEIGHT - hoverSize
+    ));
+
+    hoverX = GAME_OFFSET_X + hoverGridX * CELL_SIZE;
+    hoverY = GAME_OFFSET_Y + hoverGridY * CELL_SIZE;
+}
+
 function drawGame(gridType) {
     fillRect(ctx, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, ThemeColors["font"]);
     fillRect(ctx, GAME_OFFSET_X, GAME_OFFSET_Y, GAME_WIDTH, GAME_HEIGHT, [0, 0, 0]);
@@ -237,11 +292,11 @@ function drawGame(gridType) {
                     Math.min(1, Math.max(0, (temp - minTemp) / (maxTemp - minTemp)))
                 );
 
-                cellColor = [
-                    10 + Math.floor(245 * t),
-                    10 + 245 * Math.floor(t),
-                    10 + 245 * Math.floor(t)
-                ];
+                // Niveau de gris de 10 (froid) à 255 (chaud) sur les 3 canaux.
+                // Le Math.floor doit envelopper tout le produit : floor(t) vaut toujours 0 sauf à t = 1.
+                const level = 10 + Math.floor(245 * t);
+
+                cellColor = [level, level, level];
             }
 
             const cellX = GAME_OFFSET_X + x * CELL_SIZE;
@@ -251,28 +306,15 @@ function drawGame(gridType) {
         }
     }
 
-    hoverGridX = max(0, min(
-        Math.floor((mouseX - GAME_OFFSET_X) / CELL_SIZE),
-        GRID_WIDTH - hoverSize
-    ));
-
-    hoverGridY = max(0, min(
-        Math.floor((mouseY - GAME_OFFSET_Y) / CELL_SIZE),
-        GRID_HEIGHT - hoverSize
-    ));
-
     const hoverSelection = GRID[hoverGridY][hoverGridX];
-
-    hoverX = GAME_OFFSET_X + hoverGridX * CELL_SIZE;
-    hoverY = GAME_OFFSET_Y + hoverGridY * CELL_SIZE;
 
     drawRect(ctx, hoverX, hoverY, hoverSize * CELL_SIZE, hoverSize * CELL_SIZE, [255, 255, 255]);
 
     drawText(ctx, hoverSelection.type.toString(), GAME_OFFSET_X + 4, GAME_OFFSET_Y + 30, 13, ThemeColors["text"]);
-    drawText(ctx, hoverSelection.temperature.toString() + "°C", GAME_OFFSET_X + 4, GAME_OFFSET_Y + 47, 13, ThemeColors["text"]);
+    drawText(ctx, hoverSelection.temperature.toFixed(1) + "°C", GAME_OFFSET_X + 4, GAME_OFFSET_Y + 47, 13, ThemeColors["text"]);
 
-    if (loops % 15 === 0) FPS = Math.round(1 / (deltaTime ?? 1));
     drawText(ctx, "Fps: " + FPS.toString(), GAME_OFFSET_X + 4, GAME_OFFSET_Y + 13, 13, ThemeColors["text"]);
+    drawText(ctx, "t = " + simTime.toFixed(1) + " s (x" + TIME_SCALE + ")", GAME_OFFSET_X + 4, GAME_OFFSET_Y + 64, 13, ThemeColors["text"]);
 }
 
 function handleGameInput() {
@@ -307,13 +349,16 @@ function handleGameInput() {
         );
     }
 
-    if (keys['&']) hoverCell = MATERIALS["water"];
-    if (keys['é']) hoverCell = MATERIALS["sand"];
-    if (keys['"']) hoverCell = MATERIALS["wall"];
-    if (keys["'"]) hoverCell = MATERIALS["uranium"];
+    // Rangée de chiffres : touches physiques 1 à 4 (sur AZERTY : & é " ')
+    if (keys['Digit1']) hoverCell = MATERIALS["water"];
+    if (keys['Digit2']) hoverCell = MATERIALS["sand"];
+    if (keys['Digit3']) hoverCell = MATERIALS["wall"];
+    if (keys['Digit4']) hoverCell = MATERIALS["uranium"];
 
-    if (keys['1']) gridType = "Normal";
-    if (keys['2']) gridType = "Temperature";
+    // Vues : N / pavé numérique 1 = normale, T / pavé numérique 2 = température
+    // (avant : "1" et "2", qui exigent Shift sur AZERTY)
+    if (keys['KeyN'] || keys['Numpad1']) gridType = "Normal";
+    if (keys['KeyT'] || keys['Numpad2']) gridType = "Temperature";
 }
 
 // Sens de balayage des colonnes, inversé à chaque tick
@@ -420,6 +465,10 @@ function tryConvection(x, y, current) {
     return false;
 }
 
+// Un tick de matière = 1 déplacement maximum par cellule.
+// Approximation (corrigée à l'étape D/F) : la mécanique est cadencée en ticks (60/s réelles)
+// et non en secondes simulées. Elle utilise donc le même nombre de ticks que le thermique,
+// mais sans vitesse ni accélération physiques.
 function simulateMatter() {
     clearMatterBuffer();
 
@@ -447,6 +496,7 @@ function simulateMatter() {
     MATTER_SCAN_LEFT_TO_RIGHT = !MATTER_SCAN_LEFT_TO_RIGHT;
 }
 
+// Avance la thermique de SIM_DT secondes simulées (un tick), en sous-étapes si nécessaire
 function simulateThermal() {
 
     const capacities = [];
@@ -509,15 +559,17 @@ function simulateThermal() {
     const substeps = Math.max(
         1,
         Math.ceil(
-            THERMAL_RATE * maxRate / THERMAL_SAFETY_FACTOR
+            SIM_DT * maxRate / THERMAL_SAFETY_FACTOR
         )
     );
 
-    const deltaTime = THERMAL_RATE / substeps;
+    // Durée simulée d'une sous-étape (s). Nommé subDt pour ne pas masquer
+    // le deltaTime global (temps réel entre deux images).
+    const subDt = SIM_DT / substeps;
 
     // 4. Simulation des échanges thermiques
     for (let step = 0; step < substeps; step++) {
-        simulateHeatGeneration(deltaTime);
+        simulateHeatGeneration(subDt);
 
         // Calcul des échanges
         for (let y = 0; y < GRID_HEIGHT; y++) {
@@ -544,7 +596,7 @@ function simulateThermal() {
                     const energy =
                         conductance *
                         (current.temperature - other.temperature) *
-                        deltaTime;
+                        subDt;
 
                     ENERGY_BUFFER[y][x] -= energy;
                     ENERGY_BUFFER[ny][nx] += energy;
@@ -568,7 +620,7 @@ function simulateThermal() {
     }
 }
 
-function simulateHeatGeneration(deltaTime) {
+function simulateHeatGeneration(dt) {
 
     for (let y = 0; y < GRID_HEIGHT; y++) {
         for (let x = 0; x < GRID_WIDTH; x++) {
@@ -582,62 +634,107 @@ function simulateHeatGeneration(deltaTime) {
             const mass = getThermalMass(current);
 
             const generatedEnergy =
-                heatGeneration * mass * deltaTime;
+                heatGeneration * mass * dt;
 
             ENERGY_BUFFER[y][x] += generatedEnergy;
         }
     }
 }
 
-function gameLoop() {
-    startTime = performance.now();
+// Un tick complet de simulation : matière puis thermique, avancée de SIM_DT secondes simulées
+function simulateStep() {
+    simulateMatter();
+    simulateThermal();
+    simTime += SIM_DT;
+}
+
+// Convertit le temps réel écoulé en un nombre entier de ticks de durée fixe.
+// Retourne le nombre de ticks exécutés.
+function runFixedSteps() {
+    // Une image anormalement longue (onglet en arrière-plan, gel du navigateur)
+    // ne doit pas déclencher un énorme rattrapage.
+    accumulator += min(deltaTime, MAX_FRAME_TIME);
+
+    let steps = 0;
+
+    while (accumulator >= TICK_REAL && steps < MAX_STEPS_PER_FRAME) {
+        simulateStep();
+        accumulator -= TICK_REAL;
+        steps++;
+    }
+
+    // Plafond atteint : on garde seulement la fraction de tick restante,
+    // le retard est abandonné (le jeu ralentit au lieu de geler).
+    if (accumulator >= TICK_REAL) accumulator %= TICK_REAL;
+
+    return steps;
+}
+
+function gameLoop(now) {
+    // now = horodatage (ms) fourni par requestAnimationFrame
+    if (lastFrameTime === null) lastFrameTime = now;
+
+    // Temps RÉEL entre deux images (s). Ne sert ni à la physique ni au temps simulé.
+    deltaTime = (now - lastFrameTime) * 0.001;
+    lastFrameTime = now;
+
+    // FPS réel, moyenné sur 0,5 s
+    fpsFrames++;
+    fpsTimer += deltaTime;
+    if (fpsTimer >= 0.5) {
+        FPS = Math.round(fpsFrames / fpsTimer);
+        fpsFrames = 0;
+        fpsTimer = 0;
+    }
 
     if (state === "Menu") {
+        accumulator = 0;
         drawMenu(selectedOption, options);
 
-        if (keys['ArrowUp'] && startTime - lastPress > 150) {
+        if (keys['ArrowUp'] && now - lastPress > 150) {
             selectedOption--;
-            lastPress = startTime;
+            lastPress = now;
 
-        } else if (keys['ArrowDown'] && startTime - lastPress > 150) {
+        } else if (keys['ArrowDown'] && now - lastPress > 150) {
             selectedOption++;
-            lastPress = startTime;
+            lastPress = now;
 
-        } else if (keys['Enter'] && startTime - lastPress > 150) {
+        } else if ((keys['Enter'] || keys['NumpadEnter']) && now - lastPress > 150) {
             state = options[selectedOption];
-            lastPress = startTime;
+            lastPress = now;
         }
 
         selectedOption = max(0, min(options.length - 1, selectedOption));
     }
-    
+
     else if (state === "How to play") {
+        accumulator = 0;
         drawHowToPlay();
-        
-        if (keys['Enter'] && startTime - lastPress > 150) {
+
+        if ((keys['Enter'] || keys['NumpadEnter']) && now - lastPress > 150) {
             state = "Menu";
-            lastPress = startTime;
+            lastPress = now;
         }
     }
-    
+
     else if (state === "Credits") {
+        accumulator = 0;
         drawCredits();
-        
-        if (keys['Enter'] && startTime - lastPress > 150) {
+
+        if ((keys['Enter'] || keys['NumpadEnter']) && now - lastPress > 150) {
             state = "Menu";
-            lastPress = startTime;
+            lastPress = now;
         }
     }
 
     else if (state === "Play") {
-        drawGame(gridType);
+        updateHover();
 
         handleGameInput();
 
-        simulateMatter();
+        runFixedSteps();
 
-        simulateThermal();
-
+        drawGame(gridType);
     }
 
     if (running) {
@@ -645,8 +742,6 @@ function gameLoop() {
     }
 
     loops++;
-    endTime = performance.now();
-    deltaTime = (endTime - startTime)*0.001;
 }
 
-gameLoop();
+requestAnimationFrame(gameLoop);

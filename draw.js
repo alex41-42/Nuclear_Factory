@@ -11,7 +11,8 @@ function RGBtoHEX(col, A = 1) {
 }
 
 function mixColors(col1,col2,c1=0.5,c2=0.5){
-    return [Math.round(col1[0]*c1+col2[0]*c2),Math.round(col1[1]*c1+col2[1]*c2),Math.round(col1[0]*c1+col2[1]*c2)]
+    // Chaque composante (R, G, B) est mélangée avec la même composante de l'autre couleur
+    return [Math.round(col1[0]*c1+col2[0]*c2),Math.round(col1[1]*c1+col2[1]*c2),Math.round(col1[2]*c1+col2[2]*c2)]
 }
 
 function fillRect(ctx, x, y, w, h, color, A = 1) {
