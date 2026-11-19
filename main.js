@@ -151,23 +151,26 @@ const THERMAL_DIRECTIONS = [
 
 const THERMAL_SAFETY_FACTOR = 0.45;
 
-function getThermalCapacity(cell) {
+function getThermalMass(cell) {
     const density = cell.thermalDensity ?? cell.density;
 
+    if (!Number.isFinite(density) || density <= 0) return 0;
+
+    const volume = CELL_SIZE_METERS ** 3;
+
+    return density * volume;
+}
+
+function getThermalCapacity(cell) {
+    const mass = getThermalMass(cell);
+
     if (
-        !Number.isFinite(density) ||
-        density <= 0 ||
+        mass <= 0 ||
+        !Number.isFinite(cell.heatCapacity) ||
         cell.heatCapacity <= 0
     ) {
         return 0;
     }
-
-    const volume =
-        CELL_SIZE_METERS *
-        CELL_SIZE_METERS *
-        CELL_SIZE_METERS;
-
-    const mass = density * volume;
 
     return mass * cell.heatCapacity;
 }
@@ -236,8 +239,8 @@ function drawGame(gridType) {
 
                 cellColor = [
                     10 + Math.floor(245 * t),
-                    10,
-                    10
+                    10 + 245 * Math.floor(t),
+                    10 + 245 * Math.floor(t)
                 ];
             }
 
@@ -514,6 +517,7 @@ function simulateThermal() {
 
     // 4. Simulation des échanges thermiques
     for (let step = 0; step < substeps; step++) {
+        simulateHeatGeneration(deltaTime);
 
         // Calcul des échanges
         for (let y = 0; y < GRID_HEIGHT; y++) {
@@ -560,6 +564,27 @@ function simulateThermal() {
 
                 ENERGY_BUFFER[y][x] = 0;
             }
+        }
+    }
+}
+
+function simulateHeatGeneration(deltaTime) {
+
+    for (let y = 0; y < GRID_HEIGHT; y++) {
+        for (let x = 0; x < GRID_WIDTH; x++) {
+
+            const current = GRID[y][x];
+
+            const heatGeneration = current.heatGeneration ?? 0;
+
+            if (heatGeneration <= 0) continue;
+
+            const mass = getThermalMass(current);
+
+            const generatedEnergy =
+                heatGeneration * mass * deltaTime;
+
+            ENERGY_BUFFER[y][x] += generatedEnergy;
         }
     }
 }
